@@ -8,12 +8,25 @@ const ATTR_ORIGINAL = 'data-myna-original';
 const FLOATING_BUTTON_ID = 'myna-floating-trigger';
 const MAX_BLOCKS = 10;
 const EDGE_GAP = 14;
+const PREFETCH_VIEWPORT_MULTIPLIER = 1.6;
 
 let isTranslating = false;
 let autoModeEnabled = false;
 let autoTranslateTimer: number | null = null;
 let floatingPosition = { x: 0, y: 0 };
 let hasManualPosition = false;
+
+const pageTranslationCache = new Map<string, string>();
+const inFlightTextKeys = new Set<string>();
+
+function hashText(text: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `t${(hash >>> 0).toString(36)}`;
+}
 
 function hasTranslations() {
   return Boolean(document.querySelector(`[${ATTR_TRANSLATED}="true"]`));
@@ -24,31 +37,39 @@ function cleanupTranslations() {
   document.querySelectorAll(`[${ATTR_ORIGINAL}="true"]`).forEach((node) => {
     node.removeAttribute(ATTR_ORIGINAL);
     node.removeAttribute(ATTR_BLOCK_ID);
+    node.removeAttribute('data-myna-text-key');
   });
+  inFlightTextKeys.clear();
 }
 
-function isInViewport(element: HTMLElement) {
+function isNearViewport(element: HTMLElement) {
   const rect = element.getBoundingClientRect();
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
-  return rect.bottom > 48 && rect.top < viewportHeight - 48;
+  const expandedTop = -viewportHeight * 0.2;
+  const expandedBottom = viewportHeight * PREFETCH_VIEWPORT_MULTIPLIER;
+  return rect.bottom > expandedTop && rect.top < expandedBottom;
 }
 
-function isAlreadyProcessed(element: HTMLElement) {
-  return element.hasAttribute(ATTR_BLOCK_ID) || element.hasAttribute(ATTR_ORIGINAL);
+function isAlreadyTranslated(element: HTMLElement) {
+  return element.hasAttribute(ATTR_ORIGINAL) && !!element.nextElementSibling?.hasAttribute(ATTR_TRANSLATED);
+}
+
+function normalizeText(element: HTMLElement) {
+  return element.innerText.trim().replace(/\s+/g, ' ');
 }
 
 function collectBlocks() {
   const seen = new Set<string>();
   const elements = Array.from(document.querySelectorAll<HTMLElement>(SELECTOR));
-
-  const visibleFirst = elements.filter(isInViewport);
-  const candidates = visibleFirst.length ? visibleFirst : elements;
+  const nearViewport = elements.filter(isNearViewport);
+  const candidates = nearViewport.length ? nearViewport : elements;
 
   return candidates
     .filter((element) => {
       if (element.closest('[data-myna-translated="true"]')) return false;
-      if (isAlreadyProcessed(element)) return false;
-      const text = element.innerText.trim().replace(/\s+/g, ' ');
+      if (isAlreadyTranslated(element)) return false;
+
+      const text = normalizeText(element);
       if (text.length < 36 || text.length > 1200) return false;
       if (seen.has(text)) return false;
       seen.add(text);
@@ -56,12 +77,17 @@ function collectBlocks() {
     })
     .slice(0, MAX_BLOCKS)
     .map((element, index) => {
+      const originalText = normalizeText(element);
+      const textKey = hashText(originalText);
       const id = `block-${Date.now()}-${index + 1}`;
       element.setAttribute(ATTR_BLOCK_ID, id);
       element.setAttribute(ATTR_ORIGINAL, 'true');
+      element.setAttribute('data-myna-text-key', textKey);
       return {
         id,
-        originalText: element.innerText.trim(),
+        originalText,
+        textKey,
+        element,
       };
     });
 }
@@ -77,6 +103,17 @@ function createTranslationNode(text: string) {
 
   wrapper.append(body);
   return wrapper;
+}
+
+function insertTranslation(element: HTMLElement, text: string) {
+  const existing = element.nextElementSibling as HTMLElement | null;
+  if (existing?.hasAttribute(ATTR_TRANSLATED)) {
+    existing.textContent = '';
+    existing.append(createTranslationNode(text).firstElementChild!);
+    return;
+  }
+
+  element.insertAdjacentElement('afterend', createTranslationNode(text));
 }
 
 function ensureStyles() {
@@ -233,11 +270,34 @@ function updateFloatingButton() {
   button.setAttribute('aria-label', autoModeEnabled ? '关闭自动翻译' : '开启自动翻译');
 }
 
+function applyCachedTranslations(blocks: ReturnType<typeof collectBlocks>) {
+  const pending: typeof blocks = [];
+
+  blocks.forEach((block) => {
+    const cached = pageTranslationCache.get(block.textKey);
+    if (cached) {
+      insertTranslation(block.element, cached);
+      inFlightTextKeys.delete(block.textKey);
+      return;
+    }
+
+    if (inFlightTextKeys.has(block.textKey)) return;
+    pending.push(block);
+  });
+
+  return pending;
+}
+
 async function translateVisibleBlocks() {
   if (isTranslating) return;
 
   const blocks = collectBlocks();
   if (!blocks.length) return;
+
+  const pendingBlocks = applyCachedTranslations(blocks) ?? [];
+  if (!pendingBlocks.length) return;
+
+  pendingBlocks.forEach((block) => inFlightTextKeys.add(block.textKey));
 
   isTranslating = true;
   updateFloatingButton();
@@ -246,24 +306,29 @@ async function translateVisibleBlocks() {
     const translations = (await browser.runtime.sendMessage({
       type: 'TRANSLATE_BLOCKS',
       payload: {
-        blocks,
+        blocks: pendingBlocks.map(({ id, originalText }) => ({ id, originalText })),
         pageTitle: document.title,
         pageUrl: location.href,
       },
     })) as TranslateResponse[];
 
-    translations.forEach((item) => {
-      const original = document.querySelector<HTMLElement>(`[${ATTR_BLOCK_ID}="${item.id}"]`);
-      if (!original) return;
-      original.insertAdjacentElement('afterend', createTranslationNode(item.translatedText));
+    const translationMap = new Map(translations.map((item) => [item.id, item.translatedText]));
+
+    pendingBlocks.forEach((block) => {
+      const translatedText = translationMap.get(block.id);
+      inFlightTextKeys.delete(block.textKey);
+      if (!translatedText) return;
+      pageTranslationCache.set(block.textKey, translatedText);
+      insertTranslation(block.element, translatedText);
     });
   } finally {
+    pendingBlocks.forEach((block) => inFlightTextKeys.delete(block.textKey));
     isTranslating = false;
     updateFloatingButton();
   }
 }
 
-function scheduleAutoTranslate() {
+function scheduleAutoTranslate(delay = 180) {
   if (!autoModeEnabled) return;
   if (autoTranslateTimer !== null) {
     window.clearTimeout(autoTranslateTimer);
@@ -271,7 +336,22 @@ function scheduleAutoTranslate() {
   autoTranslateTimer = window.setTimeout(() => {
     autoTranslateTimer = null;
     void translateVisibleBlocks();
-  }, 220);
+  }, delay);
+}
+
+function startProactiveWarmup() {
+  if (!autoModeEnabled) return;
+  let remaining = 4;
+
+  const step = () => {
+    if (!autoModeEnabled || remaining <= 0) return;
+    remaining -= 1;
+    void translateVisibleBlocks().finally(() => {
+      window.setTimeout(step, 260);
+    });
+  };
+
+  window.setTimeout(step, 120);
 }
 
 function setAutoMode(enabled: boolean) {
@@ -285,7 +365,7 @@ function setAutoMode(enabled: boolean) {
     cleanupTranslations();
     return;
   }
-  void translateVisibleBlocks();
+  startProactiveWarmup();
 }
 
 function bindFloatingInteractions(button: HTMLButtonElement) {
@@ -359,7 +439,7 @@ function handleViewportChange() {
     floatingPosition = getDefaultFloatingPosition();
   }
   snapFloatingButtonToEdge();
-  scheduleAutoTranslate();
+  scheduleAutoTranslate(120);
 }
 
 export default defineContentScript({
@@ -369,11 +449,11 @@ export default defineContentScript({
     ensureStyles();
     ensureFloatingButton();
 
-    window.addEventListener('scroll', scheduleAutoTranslate, { passive: true });
+    window.addEventListener('scroll', () => scheduleAutoTranslate(90), { passive: true });
     window.addEventListener('resize', handleViewportChange, { passive: true });
 
     const observer = new MutationObserver(() => {
-      scheduleAutoTranslate();
+      scheduleAutoTranslate(90);
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
