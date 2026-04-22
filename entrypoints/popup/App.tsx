@@ -122,9 +122,9 @@ function App() {
       <section className="panel hints">
         <p>当前 API Key：{maskedApiKey}</p>
         <ul>
-          <li>会抓取当前页面前 18 个主要段落做双语插入。</li>
-          <li>再点一次按钮会清掉译文，方便反复试模型。</li>
-          <li>这只是第一版骨架，后面适合继续加划词翻译、段落缓存和更多 provider。</li>
+          <li>页面里会出现一个悬浮按钮，默认只翻译当前可见区域。</li>
+          <li>注入样式已改成更轻的双语辅助阅读，再点一次会清掉译文。</li>
+          <li>这还是第一版骨架，后面适合继续加划词翻译、段落缓存和更多 provider。</li>
         </ul>
       </section>
 
