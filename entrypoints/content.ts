@@ -6,9 +6,14 @@ const ATTR_BLOCK_ID = 'data-myna-block-id';
 const ATTR_TRANSLATED = 'data-myna-translated';
 const ATTR_ORIGINAL = 'data-myna-original';
 const FLOATING_BUTTON_ID = 'myna-floating-trigger';
-const MAX_BLOCKS = 14;
+const MAX_BLOCKS = 10;
+const EDGE_GAP = 14;
 
 let isTranslating = false;
+let autoModeEnabled = false;
+let autoTranslateTimer: number | null = null;
+let floatingPosition = { x: 0, y: 0 };
+let hasManualPosition = false;
 
 function hasTranslations() {
   return Boolean(document.querySelector(`[${ATTR_TRANSLATED}="true"]`));
@@ -20,13 +25,16 @@ function cleanupTranslations() {
     node.removeAttribute(ATTR_ORIGINAL);
     node.removeAttribute(ATTR_BLOCK_ID);
   });
-  updateFloatingButton();
 }
 
 function isInViewport(element: HTMLElement) {
   const rect = element.getBoundingClientRect();
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
   return rect.bottom > 48 && rect.top < viewportHeight - 48;
+}
+
+function isAlreadyProcessed(element: HTMLElement) {
+  return element.hasAttribute(ATTR_BLOCK_ID) || element.hasAttribute(ATTR_ORIGINAL);
 }
 
 function collectBlocks() {
@@ -39,6 +47,7 @@ function collectBlocks() {
   return candidates
     .filter((element) => {
       if (element.closest('[data-myna-translated="true"]')) return false;
+      if (isAlreadyProcessed(element)) return false;
       const text = element.innerText.trim().replace(/\s+/g, ' ');
       if (text.length < 36 || text.length > 1200) return false;
       if (seen.has(text)) return false;
@@ -47,7 +56,7 @@ function collectBlocks() {
     })
     .slice(0, MAX_BLOCKS)
     .map((element, index) => {
-      const id = `block-${index + 1}`;
+      const id = `block-${Date.now()}-${index + 1}`;
       element.setAttribute(ATTR_BLOCK_ID, id);
       element.setAttribute(ATTR_ORIGINAL, 'true');
       return {
@@ -97,59 +106,78 @@ function ensureStyles() {
 
     #${FLOATING_BUTTON_ID} {
       position: fixed;
-      right: 20px;
-      bottom: 24px;
+      left: ${EDGE_GAP}px;
+      top: 96px;
       z-index: 2147483646;
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      max-width: min(68vw, 240px);
-      padding: 10px 14px;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
       border: 1px solid rgba(148, 163, 184, 0.18);
       border-radius: 999px;
-      background: rgba(15, 23, 42, 0.9);
+      background: rgba(15, 23, 42, 0.92);
       color: #fff;
       box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
       backdrop-filter: blur(12px);
-      cursor: pointer;
-      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-      font-size: 13px;
-      line-height: 1;
-      transition: transform 140ms ease, opacity 140ms ease, background 140ms ease;
+      cursor: grab;
+      transition: transform 140ms ease, opacity 140ms ease, background 140ms ease, box-shadow 140ms ease;
       user-select: none;
+      touch-action: none;
+      padding: 0;
     }
 
     #${FLOATING_BUTTON_ID}:hover {
       transform: translateY(-1px);
-      background: rgba(30, 41, 59, 0.96);
     }
 
-    #${FLOATING_BUTTON_ID}[data-state="loading"] {
+    #${FLOATING_BUTTON_ID}[data-state='on'] {
+      background: rgba(67, 56, 202, 0.96);
+      box-shadow: 0 12px 30px rgba(79, 70, 229, 0.28);
+    }
+
+    #${FLOATING_BUTTON_ID}[data-state='loading'] {
       cursor: wait;
-      opacity: 0.9;
+      opacity: 0.92;
     }
 
-    #${FLOATING_BUTTON_ID} .myna-floating-dot {
+    #${FLOATING_BUTTON_ID}[data-dragging='true'] {
+      cursor: grabbing;
+      transition: none;
+    }
+
+    #${FLOATING_BUTTON_ID} .myna-floating-core {
+      position: relative;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.18);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #${FLOATING_BUTTON_ID} .myna-floating-core::before {
+      content: '';
       width: 8px;
       height: 8px;
       border-radius: 999px;
-      background: linear-gradient(180deg, #c4b5fd 0%, #818cf8 100%);
-      flex: 0 0 auto;
+      background: rgba(255, 255, 255, 0.88);
+      transform: scale(0.82);
+      transition: transform 140ms ease, opacity 140ms ease;
     }
 
-    #${FLOATING_BUTTON_ID} .myna-floating-text {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      opacity: 0.96;
+    #${FLOATING_BUTTON_ID}[data-state='on'] .myna-floating-core::before {
+      transform: scale(1);
     }
 
-    @media (max-width: 720px) {
-      #${FLOATING_BUTTON_ID} {
-        right: 14px;
-        bottom: 18px;
-        padding: 10px 12px;
-      }
+    #${FLOATING_BUTTON_ID}[data-state='loading'] .myna-floating-core::before {
+      animation: myna-pulse 1.05s ease-in-out infinite;
+    }
+
+    @keyframes myna-pulse {
+      0%, 100% { opacity: 0.45; transform: scale(0.72); }
+      50% { opacity: 1; transform: scale(1.08); }
     }
   `;
   document.head.appendChild(style);
@@ -159,60 +187,62 @@ function getFloatingButton() {
   return document.getElementById(FLOATING_BUTTON_ID) as HTMLButtonElement | null;
 }
 
+function clamp(n: number, min: number, max: number) {
+  return Math.min(Math.max(n, min), max);
+}
+
+function getDefaultFloatingPosition() {
+  const x = window.innerWidth - EDGE_GAP - 44;
+  const y = clamp(window.innerHeight * 0.68, EDGE_GAP, window.innerHeight - 44 - EDGE_GAP);
+  return { x, y };
+}
+
+function applyFloatingPosition() {
+  const button = getFloatingButton();
+  if (!button) return;
+  button.style.left = `${Math.round(floatingPosition.x)}px`;
+  button.style.top = `${Math.round(floatingPosition.y)}px`;
+}
+
+function snapFloatingButtonToEdge() {
+  const button = getFloatingButton();
+  if (!button) return;
+
+  const width = button.offsetWidth || 44;
+  const height = button.offsetHeight || 44;
+  const midX = floatingPosition.x + width / 2;
+  const shouldStickRight = midX > window.innerWidth / 2;
+  floatingPosition.x = shouldStickRight
+    ? window.innerWidth - width - EDGE_GAP
+    : EDGE_GAP;
+  floatingPosition.y = clamp(floatingPosition.y, EDGE_GAP, window.innerHeight - height - EDGE_GAP);
+  applyFloatingPosition();
+}
+
 function updateFloatingButton() {
   const button = getFloatingButton();
   if (!button) return;
 
-  const text = button.querySelector('.myna-floating-text');
-  if (!text) return;
-
   if (isTranslating) {
     button.dataset.state = 'loading';
-    text.textContent = 'Myna 正在翻译可见内容…';
+    button.setAttribute('aria-label', 'Myna 自动翻译中');
     return;
   }
 
-  button.dataset.state = hasTranslations() ? 'translated' : 'idle';
-  text.textContent = hasTranslations() ? '清除当前页译文' : '翻译当前可见区域';
+  button.dataset.state = autoModeEnabled ? 'on' : 'off';
+  button.setAttribute('aria-label', autoModeEnabled ? '关闭自动翻译' : '开启自动翻译');
 }
 
-function ensureFloatingButton() {
-  if (getFloatingButton()) return;
-
-  const button = document.createElement('button');
-  button.id = FLOATING_BUTTON_ID;
-  button.type = 'button';
-  button.innerHTML = `
-    <span class="myna-floating-dot"></span>
-    <span class="myna-floating-text">翻译当前可见区域</span>
-  `;
-  button.addEventListener('click', () => {
-    void translatePage();
-  });
-
-  document.documentElement.appendChild(button);
-  updateFloatingButton();
-}
-
-async function translatePage() {
+async function translateVisibleBlocks() {
   if (isTranslating) return;
 
-  if (hasTranslations()) {
-    cleanupTranslations();
-    return;
-  }
+  const blocks = collectBlocks();
+  if (!blocks.length) return;
 
-  ensureStyles();
   isTranslating = true;
   updateFloatingButton();
 
   try {
-    const blocks = collectBlocks();
-    if (!blocks.length) {
-      alert('Myna 暂时没找到适合翻译的可见段落喵。');
-      return;
-    }
-
     const translations = (await browser.runtime.sendMessage({
       type: 'TRANSLATE_BLOCKS',
       payload: {
@@ -233,6 +263,105 @@ async function translatePage() {
   }
 }
 
+function scheduleAutoTranslate() {
+  if (!autoModeEnabled) return;
+  if (autoTranslateTimer !== null) {
+    window.clearTimeout(autoTranslateTimer);
+  }
+  autoTranslateTimer = window.setTimeout(() => {
+    autoTranslateTimer = null;
+    void translateVisibleBlocks();
+  }, 220);
+}
+
+function setAutoMode(enabled: boolean) {
+  autoModeEnabled = enabled;
+  updateFloatingButton();
+  if (!enabled) {
+    if (autoTranslateTimer !== null) {
+      window.clearTimeout(autoTranslateTimer);
+      autoTranslateTimer = null;
+    }
+    cleanupTranslations();
+    return;
+  }
+  void translateVisibleBlocks();
+}
+
+function bindFloatingInteractions(button: HTMLButtonElement) {
+  let startX = 0;
+  let startY = 0;
+  let originX = 0;
+  let originY = 0;
+  let moved = false;
+
+  const onPointerMove = (event: PointerEvent) => {
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+
+    const width = button.offsetWidth || 44;
+    const height = button.offsetHeight || 44;
+    floatingPosition.x = clamp(originX + dx, EDGE_GAP, window.innerWidth - width - EDGE_GAP);
+    floatingPosition.y = clamp(originY + dy, EDGE_GAP, window.innerHeight - height - EDGE_GAP);
+    applyFloatingPosition();
+  };
+
+  const onPointerUp = () => {
+    button.dataset.dragging = 'false';
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerUp);
+    hasManualPosition = true;
+
+    if (moved) {
+      snapFloatingButtonToEdge();
+      return;
+    }
+
+    setAutoMode(!autoModeEnabled);
+  };
+
+  button.addEventListener('pointerdown', (event) => {
+    if (isTranslating) return;
+    startX = event.clientX;
+    startY = event.clientY;
+    originX = floatingPosition.x;
+    originY = floatingPosition.y;
+    moved = false;
+    button.dataset.dragging = 'true';
+    button.setPointerCapture(event.pointerId);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+  });
+}
+
+function ensureFloatingButton() {
+  if (getFloatingButton()) return;
+
+  const button = document.createElement('button');
+  button.id = FLOATING_BUTTON_ID;
+  button.type = 'button';
+  button.innerHTML = `<span class="myna-floating-core"></span>`;
+  button.setAttribute('aria-label', '开启自动翻译');
+
+  document.documentElement.appendChild(button);
+
+  floatingPosition = getDefaultFloatingPosition();
+  applyFloatingPosition();
+  bindFloatingInteractions(button);
+  updateFloatingButton();
+}
+
+function handleViewportChange() {
+  if (!hasManualPosition) {
+    floatingPosition = getDefaultFloatingPosition();
+  }
+  snapFloatingButtonToEdge();
+  scheduleAutoTranslate();
+}
+
 export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_idle',
@@ -240,9 +369,18 @@ export default defineContentScript({
     ensureStyles();
     ensureFloatingButton();
 
+    window.addEventListener('scroll', scheduleAutoTranslate, { passive: true });
+    window.addEventListener('resize', handleViewportChange, { passive: true });
+
+    const observer = new MutationObserver(() => {
+      scheduleAutoTranslate();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
     browser.runtime.onMessage.addListener((message: TogglePageMessage) => {
       if (message.type === 'TOGGLE_TRANSLATE_PAGE') {
-        return translatePage().then(() => ({ ok: true }));
+        setAutoMode(!autoModeEnabled);
+        return Promise.resolve({ ok: true });
       }
       return undefined;
     });
