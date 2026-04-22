@@ -41,11 +41,41 @@ export interface SaveSettingsMessage {
   payload: TranslationSettings;
 }
 
+export interface TranslationLogEntry {
+  id: string;
+  createdAt: string;
+  status: 'success' | 'error';
+  pageTitle: string;
+  pageUrl: string;
+  model: string;
+  provider: TranslationProvider;
+  request: {
+    endpoint: string;
+    headers: Record<string, string>;
+    body: unknown;
+  };
+  response?: {
+    status: number;
+    body: unknown;
+  };
+  error?: string;
+}
+
+export interface GetLogsMessage {
+  type: 'GET_TRANSLATION_LOGS';
+}
+
+export interface ClearLogsMessage {
+  type: 'CLEAR_TRANSLATION_LOGS';
+}
+
 export type BackgroundMessage =
   | TranslateRequest
   | TogglePageMessage
   | GetSettingsMessage
-  | SaveSettingsMessage;
+  | SaveSettingsMessage
+  | GetLogsMessage
+  | ClearLogsMessage;
 
 export const DEFAULT_SETTINGS: TranslationSettings = {
   apiKey: '',
@@ -57,3 +87,5 @@ export const DEFAULT_SETTINGS: TranslationSettings = {
 };
 
 export const STORAGE_KEY = 'myna:settings';
+export const LOG_STORAGE_KEY = 'myna:translation-logs';
+export const MAX_LOG_ENTRIES = 120;

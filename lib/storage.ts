@@ -1,5 +1,12 @@
 import { browser } from 'wxt/browser';
-import { DEFAULT_SETTINGS, STORAGE_KEY, type TranslationSettings } from './types';
+import {
+  DEFAULT_SETTINGS,
+  LOG_STORAGE_KEY,
+  MAX_LOG_ENTRIES,
+  STORAGE_KEY,
+  type TranslationLogEntry,
+  type TranslationSettings,
+} from './types';
 
 export async function getSettings(): Promise<TranslationSettings> {
   const result = await browser.storage.local.get(STORAGE_KEY);
@@ -14,4 +21,24 @@ export async function saveSettings(settings: TranslationSettings) {
     [STORAGE_KEY]: settings,
   });
   return settings;
+}
+
+export async function getTranslationLogs(): Promise<TranslationLogEntry[]> {
+  const result = await browser.storage.local.get(LOG_STORAGE_KEY);
+  return (result[LOG_STORAGE_KEY] as TranslationLogEntry[] | undefined) ?? [];
+}
+
+export async function appendTranslationLog(entry: TranslationLogEntry) {
+  const current = await getTranslationLogs();
+  const next = [entry, ...current].slice(0, MAX_LOG_ENTRIES);
+  await browser.storage.local.set({
+    [LOG_STORAGE_KEY]: next,
+  });
+  return next;
+}
+
+export async function clearTranslationLogs() {
+  await browser.storage.local.set({
+    [LOG_STORAGE_KEY]: [],
+  });
 }

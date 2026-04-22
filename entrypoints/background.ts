@@ -1,10 +1,26 @@
 import { browser } from 'wxt/browser';
-import { getSettings, saveSettings } from '@/lib/storage';
+import {
+  appendTranslationLog,
+  clearTranslationLogs,
+  getSettings,
+  getTranslationLogs,
+  saveSettings,
+} from '@/lib/storage';
 import type {
   BackgroundMessage,
   TranslateResponse,
+  TranslationLogEntry,
   TranslationSettings,
 } from '@/lib/types';
+
+function sanitizeHeaders(apiKey: string) {
+  return {
+    'Content-Type': 'application/json',
+    Authorization: apiKey ? `Bearer ${apiKey.slice(0, 8)}...` : '',
+    'HTTP-Referer': 'https://github.com/SunChJ/myna-extension',
+    'X-Title': 'Myna',
+  };
+}
 
 async function translateWithOpenRouter(
   blocks: Array<{ id: string; originalText: string }>,
@@ -27,55 +43,134 @@ async function translateWithOpenRouter(
     `Page url: ${pageUrl}`,
   ].join('\n');
 
-  const response = await fetch(`${settings.baseUrl.replace(/\/$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${settings.apiKey}`,
-      'HTTP-Referer': 'https://github.com/SunChJ/myna-extension',
-      'X-Title': 'Myna',
-    },
-    body: JSON.stringify({
-      model: settings.model,
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: prompt,
-        },
-        {
-          role: 'user',
-          content: JSON.stringify({ blocks }),
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`OpenRouter 请求失败：${response.status} ${text}`);
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{
-      message?: {
-        content?: string;
-      };
-    }>;
+  const endpoint = `${settings.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const requestBody = {
+    model: settings.model,
+    temperature: 0.2,
+    response_format: { type: 'json_object' },
+    messages: [
+      {
+        role: 'system',
+        content: prompt,
+      },
+      {
+        role: 'user',
+        content: JSON.stringify({ blocks }),
+      },
+    ],
   };
 
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error('OpenRouter 返回内容为空。');
-  }
+  const baseLog: Omit<TranslationLogEntry, 'id' | 'createdAt' | 'status'> = {
+    pageTitle,
+    pageUrl,
+    model: settings.model,
+    provider: settings.provider,
+    request: {
+      endpoint,
+      headers: sanitizeHeaders(settings.apiKey),
+      body: requestBody,
+    },
+  };
 
-  const parsed = JSON.parse(content) as { translations?: TranslateResponse[] };
-  if (!Array.isArray(parsed.translations)) {
-    throw new Error('OpenRouter 返回的 JSON 结构不符合预期。');
-  }
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${settings.apiKey}`,
+        'HTTP-Referer': 'https://github.com/SunChJ/myna-extension',
+        'X-Title': 'Myna',
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  return parsed.translations;
+    const rawText = await response.text();
+    let rawJson: unknown = rawText;
+    try {
+      rawJson = JSON.parse(rawText);
+    } catch {
+      // keep raw text
+    }
+
+    if (!response.ok) {
+      await appendTranslationLog({
+        ...baseLog,
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: 'error',
+        response: {
+          status: response.status,
+          body: rawJson,
+        },
+        error: `OpenRouter 请求失败：${response.status}`,
+      });
+      throw new Error(`OpenRouter 请求失败：${response.status} ${rawText}`);
+    }
+
+    const data = rawJson as {
+      choices?: Array<{
+        message?: {
+          content?: string;
+        };
+      }>;
+    };
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      await appendTranslationLog({
+        ...baseLog,
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: 'error',
+        response: {
+          status: response.status,
+          body: rawJson,
+        },
+        error: 'OpenRouter 返回内容为空。',
+      });
+      throw new Error('OpenRouter 返回内容为空。');
+    }
+
+    const parsed = JSON.parse(content) as { translations?: TranslateResponse[] };
+    if (!Array.isArray(parsed.translations)) {
+      await appendTranslationLog({
+        ...baseLog,
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: 'error',
+        response: {
+          status: response.status,
+          body: rawJson,
+        },
+        error: 'OpenRouter 返回的 JSON 结构不符合预期。',
+      });
+      throw new Error('OpenRouter 返回的 JSON 结构不符合预期。');
+    }
+
+    await appendTranslationLog({
+      ...baseLog,
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      status: 'success',
+      response: {
+        status: response.status,
+        body: rawJson,
+      },
+    });
+
+    return parsed.translations;
+  } catch (error) {
+    if (error instanceof Error && !error.message.startsWith('OpenRouter')) {
+      await appendTranslationLog({
+        ...baseLog,
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        status: 'error',
+        error: error.message,
+      });
+    }
+    throw error;
+  }
 }
 
 export default defineBackground(() => {
@@ -85,6 +180,10 @@ export default defineBackground(() => {
         return getSettings();
       case 'SAVE_SETTINGS':
         return saveSettings(message.payload);
+      case 'GET_TRANSLATION_LOGS':
+        return getTranslationLogs();
+      case 'CLEAR_TRANSLATION_LOGS':
+        return clearTranslationLogs();
       case 'TRANSLATE_BLOCKS':
         return getSettings().then((settings) =>
           translateWithOpenRouter(

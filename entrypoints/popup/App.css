@@ -94,6 +94,13 @@ input:disabled {
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.actions .ghost {
+  grid-column: 1 / -1;
+  background: #eef2ff;
+  color: #4338ca;
 }
 
 button {

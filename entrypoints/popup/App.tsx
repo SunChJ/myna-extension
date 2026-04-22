@@ -50,6 +50,10 @@ function App() {
     }
   }
 
+  async function openLogsPage() {
+    await browser.runtime.openOptionsPage();
+  }
+
   return (
     <main className="app-shell">
       <header className="hero">
@@ -116,6 +120,9 @@ function App() {
         </button>
         <button className="secondary" onClick={translateCurrentPage} disabled={translating}>
           {translating ? '翻译中...' : '翻译当前页面'}
+        </button>
+        <button className="secondary ghost" onClick={() => void openLogsPage()}>
+          查看完整日志
         </button>
       </section>
 
