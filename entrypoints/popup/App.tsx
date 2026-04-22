@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 import { DEFAULT_SETTINGS, type TranslationSettings } from '@/lib/types';

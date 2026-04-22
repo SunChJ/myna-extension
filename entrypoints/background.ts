@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import { getSettings, saveSettings } from '@/lib/storage';
 import type {
   BackgroundMessage,

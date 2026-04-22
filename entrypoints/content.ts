@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import type { TogglePageMessage, TranslateResponse } from '@/lib/types';
 
 const SELECTOR = 'p, li, blockquote, h1, h2, h3, h4';
@@ -43,7 +44,16 @@ function createTranslationNode(text: string) {
   const wrapper = document.createElement('div');
   wrapper.setAttribute(ATTR_TRANSLATED, 'true');
   wrapper.className = 'myna-translation-block';
-  wrapper.textContent = text;
+
+  const badge = document.createElement('div');
+  badge.className = 'myna-translation-badge';
+  badge.textContent = '译文';
+
+  const body = document.createElement('div');
+  body.className = 'myna-translation-text';
+  body.textContent = text;
+
+  wrapper.append(badge, body);
   return wrapper;
 }
 
@@ -53,15 +63,39 @@ function ensureStyles() {
   style.id = 'myna-translation-style';
   style.textContent = `
     .myna-translation-block {
-      margin-top: 10px;
-      padding: 10px 12px;
-      border-radius: 10px;
-      border: 1px solid rgba(99, 102, 241, 0.18);
-      background: rgba(99, 102, 241, 0.07);
+      margin: 10px 0 16px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(99, 102, 241, 0.16);
+      background: linear-gradient(180deg, rgba(238, 242, 255, 0.92) 0%, rgba(248, 250, 252, 0.96) 100%);
       color: #312e81;
-      font-size: 0.95em;
-      line-height: 1.7;
+      box-shadow: 0 8px 24px rgba(99, 102, 241, 0.08);
+    }
+
+    .myna-translation-badge {
+      display: inline-flex;
+      align-items: center;
+      margin-bottom: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.12);
+      color: #4338ca;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .myna-translation-text {
+      font-size: 0.98em;
+      line-height: 1.8;
       white-space: pre-wrap;
+    }
+
+    [data-myna-original="true"] {
+      position: relative;
+      padding-left: 12px;
+      border-left: 3px solid rgba(148, 163, 184, 0.3);
+      color: inherit;
     }
   `;
   document.head.appendChild(style);

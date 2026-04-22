@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import { DEFAULT_SETTINGS, STORAGE_KEY, type TranslationSettings } from './types';
 
 export async function getSettings(): Promise<TranslationSettings> {
